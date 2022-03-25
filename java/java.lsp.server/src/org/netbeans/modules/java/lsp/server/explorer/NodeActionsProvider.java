@@ -64,7 +64,7 @@ public class NodeActionsProvider extends CodeActionsProvider {
     private final Set<String>  commands;
     private final Gson gson = new Gson();
 
-    private NodeActionsProvider(Set<String> commands) {
+    NodeActionsProvider(Set<String> commands) {
         this.commands = commands;
     }
 
@@ -166,7 +166,7 @@ public class NodeActionsProvider extends CodeActionsProvider {
         return CompletableFuture.completedFuture(true);
     }
     
-    private CompletableFuture<Object> invokeAction(NbCodeLanguageClient client, String category, String aid, List<Object> arguments) {
+    CompletableFuture<Object> invokeAction(NbCodeLanguageClient client, String category, String aid, List<Object> arguments) {
         String path = "Actions/" + category + "/" + aid.replace('.', '-') + ".instance"; //NOI18N
         FileObject config = FileUtil.getConfigFile(path);
         String contextType = (String) config.getAttribute("type"); //NOI18N
