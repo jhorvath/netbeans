@@ -19,7 +19,7 @@
 
 import { EnumType, Typed } from "../typesUtil";
 
-export type ID = number;
+export type ID = string;
 
 export const PropertyTypes = {
     String: "java.lang.String",

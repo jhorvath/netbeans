@@ -282,8 +282,13 @@ export interface TreeItemDecorator<T> extends vscode.Disposable {
   decorateChildren(element: T, children: Visualizer[]): Visualizer[] | Thenable<Visualizer[]>;
 }
 
+export interface TreeItemChangedListener<T> {
+  itemChanged(item?: T): void;
+}
+
 export interface CustomizableTreeDataProvider<T> extends vscode.TreeDataProvider<T> {
   fireItemChange(item? : T) : void;
+  registerTreeItemChangedListener(listener: TreeItemChangedListener<T>): void;
   addItemDecorator(deco : TreeItemDecorator<T>) : vscode.Disposable;
   getRoot() : T;
 }
@@ -292,6 +297,7 @@ class VisualizerProvider extends vscode.Disposable implements CustomizableTreeDa
   private root: Visualizer;
   private treeData : Map<number, Visualizer> = new Map();
   private decorators : TreeItemDecorator<Visualizer>[] = [];
+  private listeners: TreeItemChangedListener<Visualizer>[] = [];
   
   constructor(
     private client: LanguageClient,
@@ -316,6 +322,10 @@ class VisualizerProvider extends vscode.Disposable implements CustomizableTreeDa
     }
   }
 
+  registerTreeItemChangedListener(listener: TreeItemChangedListener<Visualizer>) {
+    this.listeners.push(listener);
+  }
+
   fireItemChange(item : Visualizer | undefined) : void {
     if (doLog) {
       this.log.appendLine(`Firing change on ${item?.idstring()}`);
@@ -325,6 +335,7 @@ class VisualizerProvider extends vscode.Disposable implements CustomizableTreeDa
     } else {
       this._onDidChangeTreeData.fire(item);
     }
+    this.listeners.forEach(l => l.itemChanged(item));
   }
 
   addItemDecorator(decoInstance : TreeItemDecorator<Visualizer>) : vscode.Disposable {
@@ -737,6 +748,7 @@ export class Visualizer extends vscode.TreeItem {
     this.children = ch;
     if (toRemove.length) {
       provider.removeVisualizers(toRemove);
+      provider.fireItemChange(this);
     }
     return newChildren;
   }

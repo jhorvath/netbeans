@@ -21,6 +21,7 @@ import * as vscode from 'vscode';
 import { CommandKey, ID, Message, PropertyMessage, Properties, Property, PropertyTypes } from './controlTypes';
 import { assertNever, isObject, isRecord, isString, IsType } from '../typesUtil';
 import { makeHtmlForProperties } from './propertiesHtmlBuilder';
+import { TreeItemChangedListener, Visualizer } from '../explorer';
 
 export class PropertiesView {
 	private static readonly COMMAND_PREFIX = "java.";
@@ -30,6 +31,34 @@ export class PropertiesView {
 	private static extensionUri: vscode.Uri;
 	private static scriptPath: vscode.Uri;
 	private static panels: Record<ID, PropertiesView> = {};
+	public static dbNodeChangeListener: TreeItemChangedListener<Visualizer> = {
+		itemChanged: (item?: Visualizer) => {
+			if (!(item && item.id))
+				return;
+			if (item.parent === null) {
+				PropertiesView.checkForDeletion(item);
+				return;
+			}
+			const panel = PropertiesView.panels[item.id];
+			if (!panel)
+				return;
+			if (panel.contextValue === item.contextValue)
+				return;
+			panel.contextValue = item.contextValue;
+			panel.reload();
+		}
+	};
+
+	static checkForDeletion(root: Visualizer) {
+		const children = root.children?.values() || [];
+		PANEL: for (const panel of Object.values(this.panels)) {
+			for (const item of children) {
+				if (panel.id === item.id)
+					continue PANEL;
+			}
+			panel.dispose();
+		}
+	}
 
 	private readonly _panel: vscode.WebviewPanel;
 	private readonly id: ID;
@@ -37,9 +66,10 @@ export class PropertiesView {
 	private readonly _disposables: vscode.Disposable[] = [];
 
 	private properties?: Properties;
+	private contextValue?: string;
 
 	public static async createOrShow(context: vscode.ExtensionContext, node: any) {
-		if (!node)
+		if (!(node && node instanceof Visualizer && node.id))
 			return;
 		const id = node.id;
 		// If we already have a panel, show it.
@@ -56,26 +86,23 @@ export class PropertiesView {
 			} else if (PropertiesView.extensionUri !== context.extensionUri)
 				throw new Error("Extension paths differ.");
 			// Otherwise, create a new panel.
-			PropertiesView.panels[id] = new PropertiesView(id, node.tooltip + " " + node.label);
+			PropertiesView.panels[id] = new PropertiesView(id, node.contextValue, node.tooltip + " " + node.label);
 		} catch (e: unknown) {
 			console.log(e);
 		}
 	}
 
-	private constructor(id: ID, name: string) {
+	private constructor(id: ID, contextValue: string | undefined, name: string) {
 		this.id = id;
 		this.name = name;
+		this.contextValue = contextValue;
 		this._panel = vscode.window.createWebviewPanel('Properties', 'Properties', vscode.ViewColumn.One, {
 			// Enable javascript in the webview
 			enableScripts: true,
 		});
 
 		// Set the webview's html content
-		this.load().then(() =>
-			this.setHtml()).catch((e) => {
-				console.error(e);
-				this.dispose();
-			});
+		this.reload();
 
 		// Listen for when the panel is disposed
 		// This happens when the user closes the panel or when the panel is closed programatically
@@ -110,6 +137,14 @@ export class PropertiesView {
 			undefined,
 			this._disposables
 		);
+	}
+
+	private reload() {
+		this.load().then(() =>
+			this.setHtml()).catch((e) => {
+				console.error(e);
+				this.dispose();
+			});
 	}
 
 	private async load() {

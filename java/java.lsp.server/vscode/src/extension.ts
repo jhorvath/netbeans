@@ -1133,8 +1133,10 @@ function doActivateWithJDK(specifiedJDK: string | null, context: ExtensionContex
         c.findTreeViewService().createView('database.connections', undefined , {
             canSelectMany : true,
 
-            providerInitializer : (customizable) =>
-                customizable.addItemDecorator(new Decorator(customizable, c))
+            providerInitializer : (customizable) => {
+                customizable.addItemDecorator(new Decorator(customizable, c));
+                customizable.registerTreeItemChangedListener(PropertiesView.dbNodeChangeListener);
+            }
         });
 
     }
