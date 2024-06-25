@@ -27,13 +27,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import org.netbeans.api.project.Project;
-import org.netbeans.modules.cloud.oracle.assets.Steps.ItemTypeStep;
 import org.netbeans.modules.cloud.oracle.items.OCIItem;
 import org.netbeans.spi.lsp.CommandProvider;
 import org.openide.util.Lookup;
 import org.openide.util.NbBundle;
 import org.openide.util.Pair;
-import org.openide.util.lookup.Lookups;
 import org.openide.util.lookup.ServiceProvider;
 
 /**
@@ -41,25 +39,15 @@ import org.openide.util.lookup.ServiceProvider;
  * @author Jan Horvath
  */
 @NbBundle.Messages({
-    "NoProjects=No Project Found",
-    "SelectProject=Select Project to Update Dependencies",
-    "SelectResourceType=Select Resource Type"})
+})
 @ServiceProvider(service = CommandProvider.class)
-public class AddNewAssetCommand implements CommandProvider {
-
-    private static final String COMMAND_ADD_NEW_ASSET = "nbls.cloud.assets.add.new"; //NOI18N
+public class ConfigMapCommand implements CommandProvider {
+    
+    private static final String COMMAND_UPLOAD_TO_CONFIGMAP = "nbls.cloud.assets.configmap.upload"; //NOI18N
 
     private static final Set COMMANDS = new HashSet<>(Arrays.asList(
-            COMMAND_ADD_NEW_ASSET
+            COMMAND_UPLOAD_TO_CONFIGMAP
     ));
-
-    private static final Map<String, String[]> DEP_MAP = new HashMap() {
-        {
-            put("Databases", new String[]{"io.micronaut.oraclecloud", "micronaut-oraclecloud-atp"}); //NOI18N
-            put("Bucket", new String[]{"io.micronaut.objectstorage", "micronaut-object-storage-oracle-cloud"}); //NOI18N
-            put("Vault", new String[]{"io.micronaut.oraclecloud", "micronaut-oraclecloud-vault"}); //NOI18N
-        }
-    };
 
     @Override
     public Set<String> getCommands() {
@@ -69,25 +57,14 @@ public class AddNewAssetCommand implements CommandProvider {
     @Override
     public CompletableFuture<Object> runCommand(String command, List<Object> arguments) {
         CompletableFuture future = new CompletableFuture();
-        Steps.NextStepProvider nsProvider = Steps.NextStepProvider.builder()
-                    .stepForClass(Steps.CompartmentStep.class, (s) -> new Steps.SuggestedStep(null))
-                    .stepForClass(Steps.SuggestedStep.class, (s) -> new Steps.ProjectStep())
-                    .build();
         Steps.getDefault()
-                .executeMultistep(new ItemTypeStep(), Lookups.fixed(nsProvider))
+                .executeMultistep(new Steps.ItemTypeStep(), Lookup.EMPTY)
                 .thenAccept(result -> {
                     Project project = ((Pair<Project, OCIItem>) result).first();
                     OCIItem item = ((Pair<Project, OCIItem>) result).second();
                     CloudAssets.getDefault().addItem(item);
-                    String[] art = DEP_MAP.get(item.getKey().getPath());
-                    try {
-                        DependencyUtils.addDependency(project, art[0], art[1]);
-                    } catch (IllegalStateException e) {
-                        future.completeExceptionally(e);
-                    }
+
                 });
-        future.complete(null);
         return future;
     }
-
 }

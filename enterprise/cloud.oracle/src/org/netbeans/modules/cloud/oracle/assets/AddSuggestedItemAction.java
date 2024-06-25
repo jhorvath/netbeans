@@ -103,6 +103,7 @@ public class AddSuggestedItemAction implements ActionListener {
             return;
         }
         Steps.NextStepProvider nsProvider = Steps.NextStepProvider.builder()
+                .stepForClass(Steps.TenancyStep.class, (s) -> new Steps.CompartmentStep())
                 .stepForClass(Steps.CompartmentStep.class, (s) -> new Steps.SuggestedStep(context.getPath()))
                 .build();
         Lookup lookup = Lookups.fixed(nsProvider);

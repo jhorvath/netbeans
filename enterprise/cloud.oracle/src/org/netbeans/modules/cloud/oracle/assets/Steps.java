@@ -18,6 +18,10 @@
  */
 package org.netbeans.modules.cloud.oracle.assets;
 
+import com.oracle.bmc.devops.DevopsClient;
+import com.oracle.bmc.devops.model.ProjectSummary;
+import com.oracle.bmc.devops.requests.ListProjectsRequest;
+import com.oracle.bmc.devops.responses.ListProjectsResponse;
 import com.oracle.bmc.identity.Identity;
 import com.oracle.bmc.identity.IdentityClient;
 import com.oracle.bmc.identity.model.Compartment;
@@ -40,6 +44,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 import org.netbeans.api.progress.ProgressHandle;
 import org.netbeans.api.project.Project;
 import org.netbeans.api.project.ProjectInformation;
@@ -47,15 +52,19 @@ import org.netbeans.api.project.ProjectUtils;
 import org.netbeans.modules.cloud.oracle.OCIManager;
 import org.netbeans.modules.cloud.oracle.OCIProfile;
 import org.netbeans.modules.cloud.oracle.OCISessionInitiator;
+import org.netbeans.modules.cloud.oracle.actions.AddDbConnectionToVault;
 import org.netbeans.modules.cloud.oracle.bucket.BucketNode;
 import org.netbeans.modules.cloud.oracle.compartment.CompartmentItem;
 import org.netbeans.modules.cloud.oracle.compute.ClusterNode;
 import org.netbeans.modules.cloud.oracle.compute.ComputeInstanceNode;
 import org.netbeans.modules.cloud.oracle.database.DatabaseItem;
 import org.netbeans.modules.cloud.oracle.database.DatabaseNode;
+import org.netbeans.modules.cloud.oracle.devops.DevopsProjectItem;
+import org.netbeans.modules.cloud.oracle.devops.DevopsProjectService;
 import org.netbeans.modules.cloud.oracle.items.OCID;
 import org.netbeans.modules.cloud.oracle.items.OCIItem;
 import org.netbeans.modules.cloud.oracle.items.TenancyItem;
+import org.netbeans.modules.cloud.oracle.vault.VaultItem;
 import org.netbeans.modules.cloud.oracle.vault.VaultNode;
 import org.openide.DialogDescriptor;
 import org.openide.DialogDisplayer;
@@ -78,7 +87,12 @@ import org.openide.util.lookup.ProxyLookup;
     "Vault=OCI Vault",
     "Bucket=Object Storage Bucket",
     "Cluster=Oracle Container Engine",
-    "Compute=Compute Instance"
+    "Compute=Compute Instance",
+    "MSG_CollectingItems=Loading OCI contents",
+    "SelectDevopsProject=Select Devops Project",
+    "FetchingDevopsProjects=Fetching DevOps projects",
+    "FetchingVaults=Fetching OCI Vaults",
+    "NoDevopsProjects=There are no Devops Projects in selected Compartment"
 })
 public final class Steps {
     private static final Logger LOG = Logger.getLogger(Steps.class.getName());
@@ -177,7 +191,20 @@ public final class Steps {
             }
         }
     }
-
+    
+    /**
+     * Provides values for steps in the multi step dialog.
+     * 
+     */
+    public interface Values {
+        
+        /**
+         * Returns a value for a given {@link Step}.
+         * @param step
+         * @return 
+         */
+        public Object getValueForStep(Class<? extends Step> step);
+    }
 
     private static class Multistep {
 
@@ -186,7 +213,7 @@ public final class Steps {
 
         Multistep(Step firstStep, Lookup lookup) {
             steps.add(firstStep);
-            this.lookup = lookup;
+            this.lookup = new ProxyLookup(Lookups.fixed(new MultistepValues(steps)), lookup);
         }
 
         NotifyDescriptor.ComposedInput.Callback createInput() {
@@ -216,7 +243,7 @@ public final class Steps {
                         while (steps.size() > 1) {
                             steps.removeLast();
                         }
-                        steps.getLast().prepare(null, lookup);
+                        steps.getLast().prepare(lookup);
                     } else if (lastNumber > number) {
                         steps.removeLast();
                         while (steps.getLast().onlyOneChoice() && steps.size() > 1) {
@@ -245,12 +272,29 @@ public final class Steps {
         public Object getResult() {
             return steps.getLast().getValue();
         }
+        
+        private static class MultistepValues implements Values {
+            private final List<Step> steps;
+
+            public MultistepValues(List<Step> steps) {
+                this.steps = steps;
+            }
+            
+            @Override
+            public Object getValueForStep(Class<? extends Step> forStep) {
+                for (Step step : steps) {
+                    if (step.getClass().equals(forStep)) {
+                        return step.getValue();
+                    }
+                }
+                return null;
+            }
+        }
     }
 
-    public static final class TenancyStep implements Step<Object, TenancyItem> {
+    public static final class TenancyStep extends AbstractStep<TenancyItem> {
         List<OCIProfile> profiles = new LinkedList<>();
         private AtomicReference<TenancyItem> selected = new AtomicReference<>();
-        private Lookup lookup;
 
         @Override
         public NotifyDescriptor createInput() {
@@ -272,24 +316,12 @@ public final class Steps {
         }
 
         @Override
-        public Step getNext() {
-            return new CompartmentStep().prepare(getValue(), lookup);
+        public void prepare(ProgressHandle h) {
+            h.progress(Bundle.CollectingProfiles_Text());
+            profiles = OCIManager.getDefault().getConnectedProfiles();
         }
 
         @Override
-        public Step<Object, TenancyItem> prepare(Object i, Lookup lookup) {
-            this.lookup = lookup;
-            ProgressHandle h = ProgressHandle.createHandle(Bundle.CollectingProfiles());
-            h.start();
-            h.progress(Bundle.CollectingProfiles_Text());
-            try {
-                profiles = OCIManager.getDefault().getConnectedProfiles();
-            } finally {
-                h.finish();
-            }
-            return this;
-        }
-
         public void setValue(String value) {
             for (OCIProfile profile : profiles) {
                 if (profile.getId().equals(value)) {
@@ -318,22 +350,15 @@ public final class Steps {
         }
     }
     
-    public static final class CompartmentStep implements Step<TenancyItem, CompartmentItem> {
+    public static final class CompartmentStep extends AbstractStep<CompartmentItem> {
         private Map<String, OCIItem> compartments = null;
         private CompartmentItem selected;
-        private Lookup lookup;
 
-        public Step<TenancyItem, CompartmentItem> prepare(TenancyItem tenancy, Lookup lookup) {
-            this.lookup = lookup;
-            ProgressHandle h = ProgressHandle.createHandle(Bundle.CollectingItems());
-            h.start();
+        @Override
+        public void prepare(ProgressHandle h) {
             h.progress(Bundle.CollectingItems_Text());
-            try {
-                compartments = getFlatCompartment(tenancy);
-            } finally {
-                h.finish();
-            }
-            return this;
+            TenancyItem tenancy = (TenancyItem) values.getValueForStep(TenancyStep.class);
+            compartments = getFlatCompartment(tenancy);
         }
 
         @Override
@@ -345,18 +370,6 @@ public final class Steps {
                 return createQuickPick(compartments, Bundle.NoCompartment());
             }
             return createQuickPick(compartments, Bundle.SelectCompartment());
-        }
-
-        @Override
-        public Step getNext() {
-            NextStepProvider nsProvider = lookup.lookup(NextStepProvider.class);
-            if (nsProvider != null) {
-                Step ns = nsProvider.nextStepFor(this);
-                if (ns != null) {
-                    return ns.prepare(getValue(), lookup);
-                }
-            } 
-            return null;
         }
 
         @Override
@@ -382,28 +395,24 @@ public final class Steps {
      * Show list of items for a suggested type.
      * 
      */
-    static class SuggestedStep implements Step<CompartmentItem, OCIItem> {
+    static class SuggestedStep extends AbstractStep<OCIItem> {
 
-        private Map<String, OCIItem> items = new HashMap<>();
+        private final Map<String, OCIItem> items = new HashMap<>();
         private OCIItem selected;
-        private Lookup lookup;
-        private final String suggestedType;
+        private String suggestedType;
 
         public SuggestedStep(String suggestedType) {
             this.suggestedType = suggestedType;
         }
         
-        public SuggestedStep prepare(CompartmentItem compartment, Lookup lookup) {
-            this.lookup = lookup;
-            ProgressHandle h = ProgressHandle.createHandle(Bundle.CollectingItems());
-            h.start();
+        @Override
+        public void prepare(ProgressHandle h) {
             h.progress(Bundle.CollectingItems_Text());
-            try {
-                getItemsByPath(compartment, suggestedType).forEach((db) -> items.put(db.getName(), db));
-            } finally {
-                h.finish();
+            if (suggestedType == null) {
+                suggestedType = (String) values.getValueForStep(ItemTypeStep.class);
             }
-            return this;
+            CompartmentItem compartment = (CompartmentItem) values.getValueForStep(CompartmentStep.class);
+            getItemsByPath(compartment, suggestedType).forEach((db) -> items.put(db.getName(), db));
         }
 
         private String getSuggestedItemName() {
@@ -425,18 +434,6 @@ public final class Steps {
         @Override
         public NotifyDescriptor createInput() {
             return createQuickPick(items, Bundle.SelectItem(getSuggestedItemName()));
-        }
-
-        @Override
-        public Step getNext() {
-            NextStepProvider nsProvider = lookup.lookup(NextStepProvider.class);
-            if (nsProvider != null) {
-                Step ns = nsProvider.nextStepFor(this);
-                if (ns != null) {
-                    return ns.prepare(getValue(), lookup);
-                }
-            } 
-            return null;
         }
 
         @Override
@@ -555,16 +552,14 @@ public final class Steps {
     /**
      *  This step allows the user to select which type of resource will be added.
      */
-    static class ItemTypeStep implements Step<Object, String> {
+    static class ItemTypeStep extends AbstractStep<String> {
         String[] types = {"Databases", "Vault", "Bucket"}; //NOI18N
 
         private Lookup lookup;
         private String selected;
 
         @Override
-        public Step<Object, String> prepare(Object item, Lookup lookup) {
-            this.lookup = lookup;
-            return this;
+        public void prepare(ProgressHandle h) {
         }
 
         @Override
@@ -582,15 +577,6 @@ public final class Steps {
         }
 
         @Override
-        public Step getNext() {
-            NextStepProvider nsProvider = NextStepProvider.builder()
-                    .stepForClass(CompartmentStep.class, (s) -> new SuggestedStep(getValue()))
-                    .stepForClass(SuggestedStep.class, (s) -> new ProjectStep())
-                    .build();
-            return new TenancyStep().prepare(null, new ProxyLookup(Lookups.fixed(nsProvider), lookup));
-        }
-
-        @Override
         public void setValue(String selected) {
             this.selected = selected;
         }
@@ -605,12 +591,11 @@ public final class Steps {
     /**
      * The purpose of this step is to select a project to update dependencies.
      */
-    public static class ProjectStep implements Step<Object, Object> {
+    public static class ProjectStep extends AbstractStep<Project> {
 
         private final CompletableFuture<Project[]> projectsFuture;
-        Map<String, Project> projects;
+        private final Map<String, Project> projects;
         private Project selectedProject;
-        private Object item;
 
         public ProjectStep() {
             projectsFuture = OpenProjectsFinder.getDefault().findTopLevelProjects();
@@ -618,20 +603,16 @@ public final class Steps {
         }
 
         @Override
-        public Step<Object, Object> prepare(Object item, Lookup lookup) {
-            this.item = item;
+        public void prepare(ProgressHandle h) {
             try {
                 Project[] p = projectsFuture.get();
                 for (int i = 0; i < p.length; i++) {
                     ProjectInformation pi = ProjectUtils.getInformation(p[i]);
                     projects.put(pi.getDisplayName(), p[i]);
                 }
-            } catch (InterruptedException ex) {
-                Exceptions.printStackTrace(ex);
-            } catch (ExecutionException ex) {
+            } catch (InterruptedException | ExecutionException ex) {
                 Exceptions.printStackTrace(ex);
             }
-            return this;
         }
 
         @Override
@@ -644,7 +625,7 @@ public final class Steps {
                         entry.getValue().getProjectDirectory().getName()));
             }
             String title = Bundle.SelectProject();
-            if (projects.size() == 0) {
+            if (projects.isEmpty()) {
                 title = Bundle.NoProjects();
             }
             return new NotifyDescriptor.QuickPick(title, title, items, false);
@@ -656,23 +637,139 @@ public final class Steps {
         }
 
         @Override
-        public Step getNext() {
-            return null;
-        }
-
-        @Override
         public void setValue(String selected) {
             selectedProject = projects.get(selected);
         }
 
         @Override
-        public Object getValue() {
+        public Project getValue() {
             if (projects.size() == 1) {
-                selectedProject = (Project) projects.values().toArray()[0];
+                return (Project) projects.values().toArray()[0];
             }
-            return Pair.of(selectedProject, item);
+            return selectedProject;
         }
 
+    }
+    
+    public static class VaultStep extends AbstractStep<VaultItem> {
+        private Map<String, VaultItem> vaults = null;
+        private VaultItem selected;
+
+        @Override
+        public void prepare(ProgressHandle h) {
+            h.progress(Bundle.FetchingVaults());
+            CompartmentItem compartment = (CompartmentItem) values.getValueForStep(CompartmentStep.class);
+            
+            vaults = VaultNode.getVaults().apply((CompartmentItem) compartment).stream()
+                    .collect(Collectors.toMap(VaultItem::getName, vault -> vault));
+        }
+
+        @Override
+        public NotifyDescriptor createInput() {
+            return createQuickPick(vaults, Bundle.SelectVault());
+        }
+
+        @Override
+        public void setValue(String selected) {
+            this.selected = vaults.get(selected);
+        }
+
+        @Override
+        public VaultItem getValue() {
+            if (onlyOneChoice()) {
+                selected = vaults.values().iterator().next();
+            }
+            return selected;
+        }
+
+        @Override
+        public boolean onlyOneChoice() {
+            return vaults.size() == 1;
+        }
+        
+        private Map<String, VaultItem> getVaults(OCIItem parent) {
+            Map<String, VaultItem> items = new HashMap<>();
+            try {
+                if (parent instanceof CompartmentItem) {
+                    VaultNode.getVaults().apply((CompartmentItem) parent).forEach((db) -> items.put(db.getName(), db));
+                }
+            } catch (BmcException e) {
+                LOG.log(Level.SEVERE, "Unable to load vault list", e); //NOI18N
+            }
+            return items;
+        }
+    }
+    
+    public static class DevopsStep extends AbstractStep<DevopsProjectItem> {
+        private Map<String, DevopsProjectItem> devopsProjects;
+        private DevopsProjectItem selected;
+
+        @Override
+        public void prepare(ProgressHandle h) {
+            h.progress(Bundle.FetchingDevopsProjects());
+            List<String> devops = DevopsProjectService.getDevopsProjectOcid();
+            VaultItem vault = (VaultItem) values.getValueForStep(VaultStep.class);
+
+            Map<String, DevopsProjectItem> allProjectsInCompartment = getDevopsProjects(vault.getCompartmentId());
+            Map<String, DevopsProjectItem> filtered = allProjectsInCompartment.entrySet()
+                    .stream()
+                    .filter(e -> devops.contains(e.getValue().getKey().getValue()))
+                    .collect(Collectors
+                            .toMap(Map.Entry::getKey, Map.Entry::getValue));
+            if (!filtered.isEmpty()) {
+                devopsProjects = filtered;
+            } else {
+                devopsProjects = allProjectsInCompartment;
+            }
+            if (devopsProjects.size() == 1) {
+                selected = devopsProjects.values().iterator().next();
+            }
+                
+        }
+
+        @Override
+        public NotifyDescriptor createInput() {
+            if (devopsProjects.size() > 1) {
+                return createQuickPick(devopsProjects, Bundle.SelectDevopsProject());
+            }
+            if (devopsProjects.isEmpty()) {
+                return new NotifyDescriptor.QuickPick("", Bundle.NoDevopsProjects(), Collections.emptyList(), false);
+            }
+            throw new IllegalStateException("No data to create input"); // NOI18N
+        }
+
+        @Override
+        public boolean onlyOneChoice() {
+            return devopsProjects.size() == 1;
+        }
+
+        @Override
+        public void setValue(String projectName) {
+            selected = devopsProjects.get(projectName);
+        }
+
+        @Override
+        public DevopsProjectItem getValue() {
+            return selected;
+        }
+        
+        protected static Map<String, DevopsProjectItem> getDevopsProjects(String compartmentId) {
+            try (DevopsClient client = new DevopsClient(OCIManager.getDefault().getConfigProvider());) {
+                ListProjectsRequest request = ListProjectsRequest.builder().compartmentId(compartmentId).build();
+                ListProjectsResponse response = client.listProjects(request);
+
+                List<ProjectSummary> projects = response.getProjectCollection().getItems();
+                for (ProjectSummary project : projects) {
+                    project.getNotificationConfig().getTopicId();
+
+                }
+                return projects.stream()
+                        .map(p -> new DevopsProjectItem(OCID.of(p.getId(), "DevopsProject"), // NOI18N
+                                compartmentId,
+                        p.getName()))
+                        .collect(Collectors.toMap(DevopsProjectItem::getName, Function.identity()));
+            }
+        }
     }
     
     /**
@@ -708,7 +805,7 @@ public final class Steps {
      * Step to select an existing database connection from the Database Explorer.
      * 
      */
-    static final class DatabaseConnectionStep implements Step<Object, DatabaseItem> {
+    static final class DatabaseConnectionStep extends AbstractStep<DatabaseItem> {
 
         private final Map<String, DatabaseItem> adbConnections;
         private DatabaseItem selected;
@@ -718,18 +815,8 @@ public final class Steps {
         }
 
         @Override
-        public Step<Object, DatabaseItem> prepare(Object empty, Lookup lookup) {
-            return this;
-        }
-
-        @Override
         public NotifyDescriptor createInput() {
             return createQuickPick(adbConnections, Bundle.SelectDBConnection());
-        }
-
-        @Override
-        public Step getNext() {
-            return null;
         }
 
         @Override
@@ -746,6 +833,7 @@ public final class Steps {
         public boolean onlyOneChoice() {
             return false;
         }
+
     }
 
 }

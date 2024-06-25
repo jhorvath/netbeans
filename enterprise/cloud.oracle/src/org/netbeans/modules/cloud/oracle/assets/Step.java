@@ -25,9 +25,9 @@ import org.openide.util.Lookup;
  *
  * @author Jan Horvath
  */
-public interface Step<T, U> {
+public interface Step<U> {
 
-    Step<T, U> prepare(T item, Lookup lookup);
+    Step<U> prepare(Lookup lookup);
 
     NotifyDescriptor createInput();
 
