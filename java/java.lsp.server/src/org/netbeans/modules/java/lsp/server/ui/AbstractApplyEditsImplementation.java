@@ -143,6 +143,9 @@ public class AbstractApplyEditsImplementation implements ApplyEditsImplementatio
         
         public CompletableFuture<Void> execute() {
             CompletableFuture<Void> response = null;
+            if (edits.isEmpty()) {
+                return CompletableFuture.completedFuture(null);
+            }
             for (WorkspaceEdit e : edits) {
                 currentEdit = e;
                 
